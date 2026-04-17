@@ -5,11 +5,11 @@ with weaviate.connect_to_local() as client:
 
     # Bottom level: Paragraph
     client.collections.create(
-        name="Paragraph",
+        name="Sentence",
         vector_config=Configure.Vectors.self_provided(),
         properties=[
             Property(name="text", data_type=DataType.TEXT),
-            Property(name="paragraph_number", data_type=DataType.INT),
+            Property(name="sentence_number", data_type=DataType.INT),
         ],
     )
     client.collections.create(
@@ -57,7 +57,7 @@ with weaviate.connect_to_local() as client:
         ],
         references=[
             ReferenceProperty(name="hasImage", target_collection="Image"),
-            ReferenceProperty(name="hasParagraph", target_collection="Paragraph"),
+            ReferenceProperty(name="hasSentence", target_collection="Sentence"),
         ],
     )
     # Table of Contents
@@ -88,6 +88,7 @@ with weaviate.connect_to_local() as client:
         vector_config=Configure.Vectors.self_provided(),
         properties=[
             Property(name="title", data_type=DataType.TEXT),
+            Property(name="manifest", data_type=DataType.TEXT),
             Property(name="author", data_type=DataType.TEXT),
             Property(name="start_page", data_type=DataType.INT),
             Property(name="end_page", data_type=DataType.INT),
@@ -96,8 +97,6 @@ with weaviate.connect_to_local() as client:
         ],
         references=[
             ReferenceProperty(name="hasPage", target_collection="Page"),
-            ReferenceProperty(name="hasCover", target_collection="Cover"),
-            ReferenceProperty(name="hasContent", target_collection="Content"),
         ],
     )
 
@@ -112,6 +111,9 @@ with weaviate.connect_to_local() as client:
         ],
         references=[
             ReferenceProperty(name="hasArticle", target_collection="Article"),
+            ReferenceProperty(name="hasPage", target_collection="Page"),
+            ReferenceProperty(name="hasCover", target_collection="Cover"),
+            ReferenceProperty(name="hasContent", target_collection="Content"),
         ],
     )
 
@@ -121,6 +123,7 @@ with weaviate.connect_to_local() as client:
         properties=[
             Property(name="title", data_type=DataType.TEXT),
             Property(name="publisher", data_type=DataType.TEXT),
+            Property(name="access_url", data_type=DataType.TEXT),
         ],
         references=[
             ReferenceProperty(name="hasIssue", target_collection="Issue"),

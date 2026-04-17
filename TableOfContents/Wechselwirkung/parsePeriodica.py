@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 from urllib.parse import quote
+
 import requests
 
 
@@ -14,7 +15,6 @@ HEADERS = {
 
 
 def pick_text(value):
-    # Return the first available localized text value from IIIF objects.
     if isinstance(value, dict):
         for key in ("en", "de", "fr", "none"):
             if key in value and value[key]:
@@ -34,33 +34,27 @@ def pick_text(value):
 
 
 def encode_pid(pid):
-    # Encode PID for RIS and homepage URLs.
     return quote(pid, safe="")
 
 
 def band_pid_for_year(year):
-    # Build the band PID, e.g. wsw-001:1979:1.
     n = year - 1978
     return f"wsw-001:{year}:{n}"
 
 
 def band_manifest_url(pid):
-    # Band-level IIIF manifest URL.
     return f"https://www.e-periodica.ch/iiif/{pid}/manifest"
 
 
 def manifest_url_from_range_id(range_id):
-    # Convert range ID like ...::272/range into ...::272/manifest.
     return range_id.replace("/range", "/manifest")
 
 
 def ris_url(pid):
-    # RIS endpoint for the given PID.
     return f"https://www.e-periodica.ch/ris?pid={encode_pid(pid)}"
 
 
 def fetch_json(url):
-    # Download JSON from the given URL, fail gracefully on decoding errors.
     try:
         response = requests.get(url, headers=HEADERS, timeout=30)
         response.raise_for_status()
@@ -71,18 +65,15 @@ def fetch_json(url):
 
 
 def fetch_text(url):
-    # Download text content from the given URL, fail gracefully.
     try:
         response = requests.get(url, headers=HEADERS, timeout=30)
         response.raise_for_status()
         return response.text
-    except Exception as exc:
-        print(f"Warning: could not fetch text from {url} ({exc})")
+    except Exception:
         return ""
 
 
 def parse_article_manifest(manifest):
-    # Extract only required IIIF fields for one article.
     metadata = {}
     for item in manifest.get("metadata", []):
         label = pick_text(item.get("label"))
@@ -103,49 +94,48 @@ def parse_article_manifest(manifest):
 
 
 def parse_ris(text):
-    # Parse RIS and extract author(s) and publication year.
     if not text.strip():
         return {"author": "", "year": ""}
 
     authors = []
-    year = None
+    year = ""
 
     for line in text.splitlines():
         if len(line) < 6 or "-" not in line[:6]:
             continue
+
         tag = line[:2]
         value = line[6:].strip()
+
         if tag == "AU":
             authors.append(value)
-        elif tag in ("Y1", "PY") and year is None:
+        elif tag in ("Y1", "PY") and not year:
             match = re.search(r"(\d{4})", value)
             year = match.group(1) if match else value
 
     return {
         "author": "; ".join(authors) if authors else "",
-        "year": year or "",
+        "year": year,
     }
 
 
 def scrape_article(article_range_id):
-    # Scrape one article using its manifest and RIS record.
     article_pid = article_range_id.split("/range")[0].split("/iiif/")[-1]
     manifest_url = manifest_url_from_range_id(article_range_id)
     iiif_manifest = fetch_json(manifest_url)
     iiif_data = parse_article_manifest(iiif_manifest)
 
-    # Try RIS fetch; fall back silently if missing or invalid.
     ris_data = {"author": "", "year": ""}
     try:
         ris_text = fetch_text(ris_url(article_pid))
-        ris_data = parse_ris(ris_text)
+        if ris_text.strip():
+            ris_data = parse_ris(ris_text)
     except Exception as exc:
         print(f"Warning: missing or invalid RIS for {article_pid} ({exc})")
 
     return {
         "manifest_url": manifest_url,
-        "article_pid": article_pid,
-        "year": ris_data.get("year", "") or "",
+        "year": "",
         "author": ris_data.get("author", "") or "",
         "title": iiif_data.get("title", "") or "",
         "pages": iiif_data.get("pages", "") or "",
@@ -153,7 +143,6 @@ def scrape_article(article_range_id):
 
 
 def get_nested_range_ids(manifest):
-    # Recursively collect all range IDs from manifest structures.
     range_ids = []
 
     def recurse(items):
@@ -167,11 +156,11 @@ def get_nested_range_ids(manifest):
 
     for structure in manifest.get("structures", []):
         recurse(structure.get("items", []))
+
     return range_ids
 
 
 def parse_issue_manifest(manifest):
-    # Extract issue-level metadata, including ISSN and issue number.
     metadata = {}
     for item in manifest.get("metadata", []):
         label = pick_text(item.get("label"))
@@ -179,8 +168,15 @@ def parse_issue_manifest(manifest):
         if label:
             metadata[label] = value
 
-    issue_number = metadata.get("Heftnummer") or metadata.get("Number") or ""
     issn = metadata.get("ISSN") or ""
+
+    issue_number = ""
+    structures = manifest.get("structures", [])
+    if structures:
+        first_structure = structures[0]
+        issue_label = pick_text(first_structure.get("label")) or ""
+        match = re.search(r"(\d+)", issue_label)
+        issue_number = match.group(1) if match else issue_label
 
     return {
         "issn": issn,
@@ -189,10 +185,13 @@ def parse_issue_manifest(manifest):
 
 
 def scrape_issue(issue_pid):
-    # Scrape one issue and collect all articles beneath it.
     issue_manifest_url = manifest_url_from_range_id(f"https://www.e-periodica.ch/iiif/{issue_pid}/range")
     issue_manifest = fetch_json(issue_manifest_url)
     issue_info = parse_issue_manifest(issue_manifest)
+
+    year_match = re.search(r":(\d{4}):", issue_pid)
+    issue_year = year_match.group(1) if year_match else ""
+
     article_range_ids = get_nested_range_ids(issue_manifest)
 
     articles = []
@@ -200,11 +199,8 @@ def scrape_issue(issue_pid):
         try:
             articles.append(scrape_article(article_range_id))
         except Exception as exc:
-            manifest_url = manifest_url_from_range_id(article_range_id)
-            article_pid = article_range_id.split("/range")[0].split("/iiif/")[-1]
             articles.append({
-                "manifest_url": manifest_url,
-                "article_pid": article_pid,
+                "manifest_url": manifest_url_from_range_id(article_range_id),
                 "year": "",
                 "author": "",
                 "title": "",
@@ -216,13 +212,13 @@ def scrape_issue(issue_pid):
         "issue_pid": issue_pid,
         "issue_manifest_url": issue_manifest_url,
         "issue_number": issue_info["issue_number"],
+        "year": issue_year,
         "issn": issue_info["issn"],
         "articles": articles,
     }
 
 
 def scrape_periodical(start_year=1979, end_year=1990):
-    # Scrape all bands/years and return a nested structure.
     bands = []
 
     for year in range(start_year, end_year + 1):
@@ -240,6 +236,7 @@ def scrape_periodical(start_year=1979, end_year=1990):
                     "issue_pid": issue_pid,
                     "issue_manifest_url": manifest_url_from_range_id(issue_range_id),
                     "issue_number": "",
+                    "year": "",
                     "issn": "",
                     "error": str(exc),
                     "articles": [],
@@ -255,7 +252,6 @@ def scrape_periodical(start_year=1979, end_year=1990):
 
 
 def save_output(data):
-    # Save the nested result as JSON and flattened CSV.
     Path("output").mkdir(exist_ok=True)
 
     with open("output/eperiodica_nested.json", "w", encoding="utf-8") as f:
@@ -269,13 +265,23 @@ def save_output(data):
                 row["band_pid"] = band.get("band_pid", "")
                 row["issue_pid"] = issue.get("issue_pid", "")
                 row["issue_number"] = issue.get("issue_number", "")
+                row["year"] = issue.get("year", "")
                 row["issn"] = issue.get("issn", "")
                 rows.append(row)
 
     fieldnames = [
-        "band_pid", "issue_pid", "issue_number", "article_pid", 
-        "manifest_url", "year", "author", "title", "pages", "issn", "error"
+        "band_pid",
+        "issue_pid",
+        "issue_number",
+        "year",
+        "manifest_url",
+        "author",
+        "title",
+        "pages",
+        "issn",
+        "error",
     ]
+
     with open("output/eperiodica_flat.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
